@@ -28,9 +28,3 @@ if __name__ == "__main__":
 
 
 
-if __name__ == "__main__":
-    test_text = "Pacijent može otkazati termin 24 sata ranije."
-    vector = embeddings.embed_query(test_text)
-
-    print("Dimenzija embeddinga:", len(vector))
-    print("Prvih 5 vrednosti:", vector[:5])

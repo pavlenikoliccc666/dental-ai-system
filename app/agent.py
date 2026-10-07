@@ -13,6 +13,7 @@ from app.tools.appointments import (
  book_appointment_tool,
  cancel_appointment_tool
 )
+from app.tools.knowledge import search_knowledge_tool
 
 
 load_dotenv()
@@ -30,7 +31,7 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 if not OPENAI_API_KEY:
     raise RuntimeError("OPENAI_API_KEY nije postavljen.")
 
-tools = [get_clinic_services_tool,get_dentist_availability_tool,get_patient_appointments_tool,find_available_slots_tool,reschedule_appointment_tool,book_appointment_tool,cancel_appointment_tool]
+tools = [get_clinic_services_tool,get_dentist_availability_tool,get_patient_appointments_tool,find_available_slots_tool,reschedule_appointment_tool,book_appointment_tool,cancel_appointment_tool,search_knowledge_tool]
 
 model = ChatOpenAI(
     model = "gpt-5.6-luna",
