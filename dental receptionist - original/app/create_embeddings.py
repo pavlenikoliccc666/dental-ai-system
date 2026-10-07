@@ -1,6 +1,6 @@
 from dotenv import load_dotenv
 from langchain_openai import OpenAIEmbeddings
-from read_knowledge import content_split, read_knowledge_file
+from app.read_knowledge import content_split, read_knowledge_file
 
 load_dotenv()
 
