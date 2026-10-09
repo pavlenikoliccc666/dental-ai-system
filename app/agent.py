@@ -1,10 +1,9 @@
-<<<<<<< HEAD:dental receptionist - original/app/agent.py
 import os
-
+from typing import Annotated,Literal
 from dotenv import load_dotenv
-
+from langgraph.graph import StateGraph,START,END
 from langchain_openai import ChatOpenAI
-
+from typing_extensions import TypedDict
 from app.tools.appointments import (
  get_clinic_services_tool,
  get_dentist_availability_tool,
@@ -12,16 +11,19 @@ from app.tools.appointments import (
  find_available_slots_tool,
  reschedule_appointment_tool,
  book_appointment_tool,
- cancel_appointment_tool
+ cancel_appointment_tool,
 )
-
-
+from langgraph.graph.message import add_messages
+from langgraph.prebuilt import ToolNode
+from langgraph.checkpoint.memory import InMemorySaver
+from app.tools.knowledge import search_knowledge_tool
 load_dotenv()
 from langchain_core.messages import (
     HumanMessage,
-    ToolMessage
+    ToolMessage,
+    SystemMessage,
+    AnyMessage
 )
-
 import json
 from langchain_core.messages import ToolMessage
 
@@ -30,13 +32,16 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 if not OPENAI_API_KEY:
     raise RuntimeError("OPENAI_API_KEY nije postavljen.")
 
-tools = [get_clinic_services_tool,get_dentist_availability_tool,get_patient_appointments_tool,find_available_slots_tool,reschedule_appointment_tool,book_appointment_tool,cancel_appointment_tool]
+tools = [search_knowledge_tool,get_clinic_services_tool,get_dentist_availability_tool,get_patient_appointments_tool,find_available_slots_tool,reschedule_appointment_tool,book_appointment_tool,cancel_appointment_tool]
 
 model = ChatOpenAI(
     model = "gpt-5.6-luna",
     temperature=0,
     model_kwargs={"reasoning_effort": "none"}
 )
+
+class AgentState(TypedDict):
+    messages : Annotated[list[AnyMessage],add_messages]
 
 
 model_with_tools = model.bind_tools(tools)
@@ -48,9 +53,33 @@ tool_registry = {
 }
 
 
+SYSTEM_PROMPT = """
+You are dental receptionist agent.You have accsess to multiple tools that can help you answer
+questions about dental clinic services,
+dentist availability, patient appointments, and scheduling. Use the tools as needed to provide accurate and helpful responses to user queries.
+If you dont have answer to the question, use the tools to find the answer.If after that you still dont have answer, say "I'm sorry, I don't have that information available at
+the moment." and do not make up an answer.
+
+Rules:
+
+1. If question is about clinic services,prices or duration about service, use get_clinic_services_tool.
+
+
+2. If question is about free slots use find available_slots_tool.
+
+3. If question is about dentist availability, use get_dentist_availability_tool.
+
+4.If question is about FAQS and policies,or general knowledge about dental clinic, use search_knowledge_tool.
+
+5. If tool doesnt have answer, say "I'm sorry, I don't have that information available at the moment." and do not make up an answer.
+
+
+"""
+
 
 def run_agent_once(user_message: str) -> str:
     messages = [
+        SystemMessage(content=SYSTEM_PROMPT),
         HumanMessage(content=user_message)
     ]
 
@@ -61,7 +90,9 @@ def run_agent_once(user_message: str) -> str:
         messages.append(response)
 
         if not response.tool_calls:
-            return response.content
+            return response.content,"over"
+        
+       return "tools"
 
         for tool_call in response.tool_calls:
             tool_name = tool_call["name"]
@@ -89,105 +120,39 @@ def run_agent_once(user_message: str) -> str:
 
 
 
+builder = StateGraph(AgentState)
 
-if __name__ == "__main__":
-    answer =run_agent_once("What services does clinic 1 have?")
-    print(answer)
-    
-    
+builder.add_node("call node",run_agent_once)
+builder.add_node("tools",ToolNode(tools))
 
-=======
-import os
+builder.add_edge(START,"call node")
 
-from dotenv import load_dotenv
+builder.add_conditional_edge("tools",
+tools)
 
-from langchain_openai import ChatOpenAI
+builder.add_edge("call node",END)
 
-from app.tools.appointments import (
- get_clinic_services_tool,
- get_dentist_availability_tool,
- get_patient_appointments_tool,
- find_available_slots_tool,
- reschedule_appointment_tool,
- book_appointment_tool,
- cancel_appointment_tool
-)
-from app.tools.knowledge import search_knowledge_tool
+checkpointer = InMemorySaver()
 
-
-load_dotenv()
-from langchain_core.messages import (
-    HumanMessage,
-    ToolMessage,
-    AIMessage
+graph = builder.compile(
+    checkpointer=checkpointer,
 )
 
-import json
-from langchain_core.messages import ToolMessage
-
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-
-if not OPENAI_API_KEY:
-    raise RuntimeError("OPENAI_API_KEY nije postavljen.")
-
-tools = [get_clinic_services_tool,get_dentist_availability_tool,get_patient_appointments_tool,find_available_slots_tool,reschedule_appointment_tool,book_appointment_tool,cancel_appointment_tool,search_knowledge_tool]
-
-model = ChatOpenAI(
-    model = "gpt-5.6-luna",
-    temperature=0,
-    model_kwargs={"reasoning_effort": "none"}
-)
-
-
-model_with_tools = model.bind_tools(tools)
-
-
-tool_registry = {
-    current_tool.name : current_tool
-    for current_tool in tools
+initial_state = {
+    "messages":[
+        HumanMessage(content="What services does clinic 1 have?")
+    ]
 }
 
 
-def run_agent_once(user_message: str) -> str:
-
-    messages = [
-        (HumanMessage(content=user_message))
-    ]
-
-    response = model_with_tools.invoke(messages)
-
-    messages.append(response)
-
-    if not response.tool_calls:
-        return response.content
-
-    for tool_call in response.tool_calls:
-        tool_name = tool_call["name"]
-        tool_args = tool_call["args"]
-
-        selected_tool = tool_registry.get(tool_name)
-
-        if selected_tool is None:
-            raise RuntimeError(f"Tool '{tool_name}' wasnt found in the tool registry.")
-
-
-        tool_result = selected_tool.invoke(tool_args)
-
-
-        messages.append(ToolMessage(content=json.dumps(tool_result,default=str),tool_call_id = tool_call["id"],))
-
-
-
-        final_response = model_with_tools.invoke(messages)
-
-        return final_response.content
-
-
 
 if __name__ == "__main__":
-    answer =run_agent_once("What services does clinic 1 have?")
+    answer = graph.invoke(initial_state)
     print(answer)
     
     
 
->>>>>>> ddf63fb3e82fc8593bb5420800ac0bc44da21b4b:app/agent.py
+
+
+    
+
