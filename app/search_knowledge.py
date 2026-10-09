@@ -29,7 +29,7 @@ def search_knowledge(
 
 if __name__ == "__main__":
     results = search_knowledge(
-        query="Kako mogu da otkažem termin?",
+        query="Koja prava ima pacijent u vezi sa svojim podacima?",
         clinic_id=1,
         limit=3,
     )
