@@ -18,8 +18,7 @@ from app.tools.appointments import (
 load_dotenv()
 from langchain_core.messages import (
     HumanMessage,
-    ToolMessage,
-    AIMessage
+    ToolMessage
 )
 
 import json
@@ -48,39 +47,45 @@ tool_registry = {
 }
 
 
-def run_agent_once(user_message: str) -> str:
 
+def run_agent_once(user_message: str) -> str:
     messages = [
-        (HumanMessage(content=user_message))
+        HumanMessage(content=user_message)
     ]
 
-    response = model_with_tools.invoke(messages)
+    max_loops = 5
 
-    messages.append(response)
+    for _ in range(max_loops):
+        response = model_with_tools.invoke(messages)
+        messages.append(response)
 
-    if not response.tool_calls:
-        return response.content
+        if not response.tool_calls:
+            return response.content
 
-    for tool_call in response.tool_calls:
-        tool_name = tool_call["name"]
-        tool_args = tool_call["args"]
+        for tool_call in response.tool_calls:
+            tool_name = tool_call["name"]
+            tool_args = tool_call["args"]
 
-        selected_tool = tool_registry.get(tool_name)
+            selected_tool = tool_registry.get(tool_name)
 
-        if selected_tool is None:
-            raise RuntimeError(f"Tool '{tool_name}' wasnt found in the tool registry.")
+            if selected_tool is None:
+                raise RuntimeError(
+                    f"Tool '{tool_name}' nije pronađen."
+                )
 
+            tool_result = selected_tool.invoke(tool_args)
 
-        tool_result = selected_tool.invoke(tool_args)
+            messages.append(
+                ToolMessage(
+                    content=json.dumps(tool_result, default=str),
+                    tool_call_id=tool_call["id"],
+                )
+            )
 
+    raise RuntimeError(
+        "Agent je dostigao maksimalan broj koraka bez konačnog odgovora."
+    )
 
-        messages.append(ToolMessage(content=json.dumps(tool_result,default=str),tool_call_id = tool_call["id"],))
-
-
-
-        final_response = model_with_tools.invoke(messages)
-
-        return final_response.content
 
 
 
