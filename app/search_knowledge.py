@@ -27,13 +27,3 @@ def search_knowledge(
 
     return results
 
-if __name__ == "__main__":
-    results = search_knowledge(
-        query="Koja prava ima pacijent u vezi sa svojim podacima?",
-        clinic_id=1,
-        limit=3,
-    )
-
-    for result in results:
-        print(result.content)
-        print("---")

@@ -1,158 +1,143 @@
+
+    
+
+
+
+    
+
 import os
-from typing import Annotated,Literal
+from typing import Annotated
+
 from dotenv import load_dotenv
-from langgraph.graph import StateGraph,START,END
 from langchain_openai import ChatOpenAI
-from typing_extensions import TypedDict
-from app.tools.appointments import (
- get_clinic_services_tool,
- get_dentist_availability_tool,
- get_patient_appointments_tool,
- find_available_slots_tool,
- reschedule_appointment_tool,
- book_appointment_tool,
- cancel_appointment_tool,
-)
-from langgraph.graph.message import add_messages
-from langgraph.prebuilt import ToolNode
-from langgraph.checkpoint.memory import InMemorySaver
-from app.tools.knowledge import search_knowledge_tool
-load_dotenv()
 from langchain_core.messages import (
+    AnyMessage,
     HumanMessage,
-    ToolMessage,
     SystemMessage,
-    AnyMessage
 )
-import json
-from langchain_core.messages import ToolMessage
+from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.graph import END, START, StateGraph
+from langgraph.graph.message import add_messages
+from langgraph.prebuilt import ToolNode, tools_condition
+from typing_extensions import TypedDict
+
+from app.tools.appointments import (
+    get_clinic_services_tool,
+    get_dentist_availability_tool,
+    get_patient_appointments_tool,
+    find_available_slots_tool,
+    reschedule_appointment_tool,
+    book_appointment_tool,
+    cancel_appointment_tool,
+)
+from app.tools.knowledge import search_knowledge_tool
+
+
+# Učitaj vrijednosti iz lokalnog .env fajla.
+load_dotenv()
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
 if not OPENAI_API_KEY:
     raise RuntimeError("OPENAI_API_KEY nije postavljen.")
 
-tools = [search_knowledge_tool,get_clinic_services_tool,get_dentist_availability_tool,get_patient_appointments_tool,find_available_slots_tool,reschedule_appointment_tool,book_appointment_tool,cancel_appointment_tool]
+
+# Ova lista određuje koje alate model smije zatražiti,
+# a ToolNode koristi istu listu da ih izvrši.
+tools = [
+    search_knowledge_tool,
+    get_clinic_services_tool,
+    get_dentist_availability_tool,
+    get_patient_appointments_tool,
+    find_available_slots_tool,
+    reschedule_appointment_tool,
+    book_appointment_tool,
+    cancel_appointment_tool,
+]
+
 
 model = ChatOpenAI(
-    model = "gpt-5.6-luna",
+    model="gpt-5.6-luna",
     temperature=0,
-    model_kwargs={"reasoning_effort": "none"}
+    model_kwargs={"reasoning_effort": "none"},
 )
 
-class AgentState(TypedDict):
-    messages : Annotated[list[AnyMessage],add_messages]
-
-
+# Model može vratiti običan tekst ili zahtjev da se izvrši neki alat.
 model_with_tools = model.bind_tools(tools)
 
 
-tool_registry = {
-    current_tool.name : current_tool
-    for current_tool in tools
-}
+class AgentState(TypedDict):
+    # add_messages spaja nove poruke s postojećom istorijom razgovora.
+    messages: Annotated[list[AnyMessage], add_messages]
 
 
 SYSTEM_PROMPT = """
-You are dental receptionist agent.You have accsess to multiple tools that can help you answer
-questions about dental clinic services,
-dentist availability, patient appointments, and scheduling. Use the tools as needed to provide accurate and helpful responses to user queries.
-If you dont have answer to the question, use the tools to find the answer.If after that you still dont have answer, say "I'm sorry, I don't have that information available at
-the moment." and do not make up an answer.
+You are a dental clinic receptionist.
+
+You can answer questions using the available clinic tools.
 
 Rules:
-
-1. If question is about clinic services,prices or duration about service, use get_clinic_services_tool.
-
-
-2. If question is about free slots use find available_slots_tool.
-
-3. If question is about dentist availability, use get_dentist_availability_tool.
-
-4.If question is about FAQS and policies,or general knowledge about dental clinic, use search_knowledge_tool.
-
-5. If tool doesnt have answer, say "I'm sorry, I don't have that information available at the moment." and do not make up an answer.
-
-
+1. For clinic services, prices, or durations, use get_clinic_services_tool.
+2. For available appointment times, use find_available_slots_tool.
+3. For a dentist's working hours, use get_dentist_availability_tool.
+4. For clinic FAQs and policies, use search_knowledge_tool.
+5. Do not invent clinic facts, prices, policies, or appointment information.
+6. If the tools do not provide the answer, say that you do not have that information.
 """
 
 
-def run_agent_once(user_message: str) -> str:
+def call_model(state: AgentState) -> dict:
+    """LangGraph node: send the conversation to the model once."""
     messages = [
         SystemMessage(content=SYSTEM_PROMPT),
-        HumanMessage(content=user_message)
+        *state["messages"],
     ]
 
-    max_loops = 5
+    response = model_with_tools.invoke(messages)
 
-    for _ in range(max_loops):
-        response = model_with_tools.invoke(messages)
-        messages.append(response)
-
-        if not response.tool_calls:
-            return response.content,"over"
-        
-       return "tools"
-
-        for tool_call in response.tool_calls:
-            tool_name = tool_call["name"]
-            tool_args = tool_call["args"]
-
-            selected_tool = tool_registry.get(tool_name)
-
-            if selected_tool is None:
-                raise RuntimeError(
-                    f"Tool '{tool_name}' nije pronađen."
-                )
-
-            tool_result = selected_tool.invoke(tool_args)
-
-            messages.append(
-                ToolMessage(
-                    content=json.dumps(tool_result, default=str),
-                    tool_call_id=tool_call["id"],
-                )
-            )
-
-    raise RuntimeError(
-        "Agent je dostigao maksimalan broj koraka bez konačnog odgovora."
-    )
+    # LangGraph doda ovu AI poruku u state["messages"].
+    return {"messages": [response]}
 
 
-
+# Napravi graph i registruj njegova dva čvora.
 builder = StateGraph(AgentState)
 
-builder.add_node("call node",run_agent_once)
-builder.add_node("tools",ToolNode(tools))
+builder.add_node("agent", call_model)
+builder.add_node("tools", ToolNode(tools))
 
-builder.add_edge(START,"call node")
+builder.add_edge(START, "agent")
 
-builder.add_conditional_edge("tools",
-tools)
+# Ova funkcija pogleda posljednju AI poruku:
+# traži alat -> "tools"; nema zahtjeva za alatom -> END.
+builder.add_conditional_edges("agent", tools_condition)
 
-builder.add_edge("call node",END)
+# Nakon izvršenog alata, model dobija rezultat i nastavlja razgovor.
+builder.add_edge("tools", "agent")
 
+
+# Pamti stanje razgovora prema thread_id.
 checkpointer = InMemorySaver()
+graph = builder.compile(checkpointer=checkpointer)
 
-graph = builder.compile(
-    checkpointer=checkpointer,
-)
 
-initial_state = {
-    "messages":[
-        HumanMessage(content="What services does clinic 1 have?")
-    ]
-}
+def run_agent_once(user_message: str,thread_id: str) -> str:
+    """Ulazna funkcija: pokreni graph za jednu korisničku poruku."""
+    result = graph.invoke(
+        {"messages": [HumanMessage(content=user_message)]},
+        config={
+            "configurable": {
+                "thread_id": thread_id,
+            }
+        },
+    )
 
+    # Posljednja poruka u završenom graph-u je konačan odgovor modela.
+    return result["messages"][-1].content
 
 
 if __name__ == "__main__":
-    answer = graph.invoke(initial_state)
-    print(answer)
+    thread_id = "test-razgovor-1"
+
+    print(run_agent_once("Zovi me Test Marko.", thread_id))
+    print(run_agent_once("Kako se zovem?", thread_id))
     
-    
-
-
-
-    
-
