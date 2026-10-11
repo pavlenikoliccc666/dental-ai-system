@@ -1,16 +1,11 @@
-
 import os
 from typing import Annotated
 
 from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI
-from langchain_core.messages import (
-    AnyMessage,
-    HumanMessage,
-    SystemMessage,
-)
-from langgraph.checkpoint.memory import InMemorySaver
-from langgraph.graph import END, START, StateGraph
+from langchain_core.messages import AnyMessage, HumanMessage, SystemMessage
+from langgraph.checkpoint.postgres import PostgresSaver
+from langgraph.graph import START, StateGraph
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode, tools_condition
 from typing_extensions import TypedDict
@@ -27,17 +22,35 @@ from app.tools.appointments import (
 from app.tools.knowledge import search_knowledge_tool
 
 
-# Učitaj vrijednosti iz lokalnog .env fajla.
+# Učitaj DATABASE_URL i OPENAI_API_KEY iz .env fajla.
 load_dotenv()
 
+DATABASE_URL = os.getenv("DATABASE_URL")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+
+if not DATABASE_URL:
+    raise RuntimeError("DATABASE_URL nije postavljen.")
 
 if not OPENAI_API_KEY:
     raise RuntimeError("OPENAI_API_KEY nije postavljen.")
 
+# SQLAlchemy URL koji koristi tvoj app počinje sa:
+# postgresql+psycopg://
+#
+# PostgresSaver koristi psycopg direktno i očekuje:
+# postgresql://
+#
+# Zato pravimo posebnu varijablu. DATABASE_URL ne mijenjamo.
+if DATABASE_URL.startswith("postgresql+psycopg://"):
+    CHECKPOINT_DATABASE_URL = DATABASE_URL.replace(
+        "postgresql+psycopg://",
+        "postgresql://",
+        1,
+    )
+else:
+    CHECKPOINT_DATABASE_URL = DATABASE_URL
 
-# Ova lista određuje koje alate model smije zatražiti,
-# a ToolNode koristi istu listu da ih izvrši.
+
 tools = [
     search_knowledge_tool,
     get_clinic_services_tool,
@@ -56,32 +69,30 @@ model = ChatOpenAI(
     model_kwargs={"reasoning_effort": "none"},
 )
 
-# Model može vratiti običan tekst ili zahtjev da se izvrši neki alat.
 model_with_tools = model.bind_tools(tools)
 
 
 class AgentState(TypedDict):
-    # add_messages spaja nove poruke s postojećom istorijom razgovora.
     messages: Annotated[list[AnyMessage], add_messages]
 
 
 SYSTEM_PROMPT = """
 You are a dental clinic receptionist.
 
-You can answer questions using the available clinic tools.
+Use the available tools for current clinic information.
 
 Rules:
-1. For clinic services, prices, or durations, use get_clinic_services_tool.
+1. For clinic services, prices, or duration, use get_clinic_services_tool.
 2. For available appointment times, use find_available_slots_tool.
-3. For a dentist's working hours, use get_dentist_availability_tool.
+3. For dentist working hours, use get_dentist_availability_tool.
 4. For clinic FAQs and policies, use search_knowledge_tool.
 5. Do not invent clinic facts, prices, policies, or appointment information.
-6. If the tools do not provide the answer, say that you do not have that information.
+6. If the tools do not provide an answer, say you do not have that information.
 """
 
 
 def call_model(state: AgentState) -> dict:
-    """LangGraph node: send the conversation to the model once."""
+    """Jedan korak: pošalji razgovor modelu i vrati njegovu poruku."""
     messages = [
         SystemMessage(content=SYSTEM_PROMPT),
         *state["messages"],
@@ -89,11 +100,9 @@ def call_model(state: AgentState) -> dict:
 
     response = model_with_tools.invoke(messages)
 
-    # LangGraph doda ovu AI poruku u state["messages"].
+    # LangGraph će ovu poruku dodati u stanje razgovora.
     return {"messages": [response]}
 
-
-# Napravi graph i registruj njegova dva čvora.
 builder = StateGraph(AgentState)
 
 builder.add_node("agent", call_model)
@@ -101,37 +110,40 @@ builder.add_node("tools", ToolNode(tools))
 
 builder.add_edge(START, "agent")
 
-# Ova funkcija pogleda posljednju AI poruku:
-# traži alat -> "tools"; nema zahtjeva za alatom -> END.
+# Tool call -> tools node; običan odgovor -> kraj.
 builder.add_conditional_edges("agent", tools_condition)
 
-# Nakon izvršenog alata, model dobija rezultat i nastavlja razgovor.
-builder.add_edge("tools", "agent")
+# Poslije alata graph se vraća modelu.
+builder.add_edge("tools", "agent") 
+def run_agent_once(user_message: str, thread_id: str) -> str:
+    """Pokreni graph za jednu poruku i vrati konačni odgovor."""
 
+    # from_conn_string otvara PostgreSQL konekciju.
+    # 'with' je zatvara kada se izađe iz ovog bloka.
+    with PostgresSaver.from_conn_string(CHECKPOINT_DATABASE_URL) as checkpointer:
+        # Pripremi checkpoint tabele ako već ne postoje.
+        checkpointer.setup()
 
-# Pamti stanje razgovora prema thread_id.
-checkpointer = InMemorySaver()
-graph = builder.compile(checkpointer=checkpointer)
+        # compile sastavlja node-ove i edge-ove u izvršiv graph.
+        graph = builder.compile(checkpointer=checkpointer)
 
+        result = graph.invoke(
+            {"messages": [HumanMessage(content=user_message)]},
+            config={
+                "configurable": {
+                    "thread_id": thread_id,
+                }
+            },
+        )
 
-def run_agent_once(user_message: str,thread_id: str) -> str:
-    """Ulazna funkcija: pokreni graph za jednu korisničku poruku."""
-    result = graph.invoke(
-        {"messages": [HumanMessage(content=user_message)]},
-        config={
-            "configurable": {
-                "thread_id": thread_id,
-            }
-        },
-    )
-
-    # Posljednja poruka u završenom graph-u je konačan odgovor modela.
     return result["messages"][-1].content
+
+
+
 
 
 if __name__ == "__main__":
     thread_id = "test-razgovor-1"
 
-    print(run_agent_once("Zovi me Test Marko.", thread_id))
-    print(run_agent_once("Kako se zovem?", thread_id))
     
+    print(run_agent_once("Kako se zovem?", thread_id))
