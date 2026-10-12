@@ -1,7 +1,8 @@
 import os
 from typing import Annotated
-
+from contextlib import asynccontextmanager
 from dotenv import load_dotenv
+from fastapi import FastAPI
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import AnyMessage, HumanMessage, SystemMessage
 from langgraph.checkpoint.postgres import PostgresSaver
@@ -115,19 +116,33 @@ builder.add_conditional_edges("agent", tools_condition)
 
 # Poslije alata graph se vraća modelu.
 builder.add_edge("tools", "agent") 
-def run_agent_once(user_message: str, thread_id: str) -> str:
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+         
+     with PostgresSaver.from_conn_string(CHECKPOINT_DATABASE_URL) as checkpointer:
+                checkpointer.setup()
+
+                graph = builder.compile(checkpointer=checkpointer)
+
+                app.state.agent_graph = graph
+
+                
+            
+               
+                yield
+
+    
+        
+
+                
+
+
+
+def run_agent_once(user_message: str, thread_id: str,graph) -> str:
     """Pokreni graph za jednu poruku i vrati konačni odgovor."""
+        
 
-    # from_conn_string otvara PostgreSQL konekciju.
-    # 'with' je zatvara kada se izađe iz ovog bloka.
-    with PostgresSaver.from_conn_string(CHECKPOINT_DATABASE_URL) as checkpointer:
-        # Pripremi checkpoint tabele ako već ne postoje.
-        checkpointer.setup()
-
-        # compile sastavlja node-ove i edge-ove u izvršiv graph.
-        graph = builder.compile(checkpointer=checkpointer)
-
-        result = graph.invoke(
+    result = graph.invoke(
             {"messages": [HumanMessage(content=user_message)]},
             config={
                 "configurable": {
@@ -142,8 +157,9 @@ def run_agent_once(user_message: str, thread_id: str) -> str:
 
 
 
+
+
 if __name__ == "__main__":
     thread_id = "test-razgovor-1"
 
     
-    print(run_agent_once("Kako se zovem?", thread_id))

@@ -69,3 +69,14 @@ class DentistAvailabilityCreate(BaseModel):
             )
 
         return self
+
+
+class Chat(BaseModel):
+    message: str
+
+
+class ChatResponse(BaseModel):
+    reply: str
+    thread_id: str
+
+    
