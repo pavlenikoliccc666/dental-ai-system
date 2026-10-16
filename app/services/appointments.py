@@ -79,7 +79,7 @@ def create_appointment(
                 AND clinic_id = :clinic_id"""),
                 {"clinic_id":clinic_id,
                  "patient_id":appointment.patient_id}
-        ).one_or_none
+        ).one_or_none()
 
         if patient_belongs_to_clinic is None:
             raise HTTPException(
@@ -95,7 +95,7 @@ def create_appointment(
             """),
             {"dentist_id":appointment.dentist_id,
              "clinic_id":clinic_id}
-        )
+        ).scalar_one_or_none()
 
         if dentist_belong_to_clinic is None:
             raise HTTPException(
